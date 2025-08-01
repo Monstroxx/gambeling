@@ -1,0 +1,17 @@
+{
+  "name": "risk-discord-bot",
+  "version": "1.0.0",
+  "description": "Discord Bot mit /risk Command für zufällige Timeouts",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "keywords": ["discord", "bot", "risk", "timeout"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.3.1"
+  }
+}
