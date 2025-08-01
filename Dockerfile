@@ -4,7 +4,7 @@
 ARG NODE_VERSION=20.18.0
 FROM node:${NODE_VERSION}-slim AS base
 
-LABEL fly_launch_runtime="Node.js"
+LABEL maintainer="Discord Bot"
 
 # Node.js app lives here
 WORKDIR /app
@@ -34,6 +34,5 @@ FROM base
 # Copy built application
 COPY --from=build /app /app
 
-# Start the server by default, this can be overwritten at runtime
-EXPOSE 3000
+# Start the Discord bot
 CMD [ "npm", "run", "start" ]

@@ -3,4 +3,7 @@
 .dockerignore
 .env
 Dockerfile
-fly.toml
+docker-compose.yml
+README.md
+npm-debug.log
+.gitignore

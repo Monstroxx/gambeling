@@ -18,8 +18,15 @@ Ein Discord Bot mit einem `/risk` Command, der zufällige Timeouts oder eine Jac
      - `JACKPOT_ROLE_ID`: Die ID der Jackpot-Rolle (z.B. "Executioner")
 
 3. **Bot starten:**
+   
+   **Direkt mit Node.js:**
    ```bash
    npm start
+   ```
+   
+   **Mit Docker (empfohlen für Server):**
+   ```bash
+   docker-compose up -d --build
    ```
 
 ## Wahrscheinlichkeiten
@@ -41,3 +48,20 @@ Der Bot braucht folgende Berechtigungen:
 - `Manage Roles` (für Jackpot-Rolle)
 - `Send Messages`
 - `Use Slash Commands`
+
+## Docker Commands
+
+**Logs anzeigen:**
+```bash
+docker-compose logs -f discord-bot
+```
+
+**Bot stoppen:**
+```bash
+docker-compose down
+```
+
+**Bot neustarten:**
+```bash
+docker-compose restart discord-bot
+```
