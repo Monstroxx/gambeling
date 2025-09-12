@@ -154,6 +154,32 @@ function getSlotResult(betAmount) {
     return result;
 }
 
+async function playSlotAnimation(message, playerName, betAmount, finalResult) {
+    const symbols = ['🍒', '🍋', '🍇', '🍊', '🍉', '⭐', '💎'];
+    
+    // Initial spinning message
+    let content = `${playerName} setzt $${betAmount}!\n🎰 | 🎲 | 🎲 | 🎲 | 🎰\nDie Slots drehen sich...`;
+    const sentMessage = await message.channel.send(content);
+    
+    // Wait a bit for dramatic effect
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // First slot stops
+    content = `${playerName} setzt $${betAmount}!\n🎰 | ${finalResult.symbols[0]} | 🎲 | 🎲 | 🎰\nErster Slot gestoppt...`;
+    await sentMessage.edit(content);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Second slot stops
+    content = `${playerName} setzt $${betAmount}!\n🎰 | ${finalResult.symbols[0]} | ${finalResult.symbols[1]} | 🎲 | 🎰\nZweiter Slot gestoppt...`;
+    await sentMessage.edit(content);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Final result
+    const newBalance = getUserMoney(message.author.id) - betAmount + finalResult.winnings;
+    content = `${playerName} setzt $${betAmount}!\n🎰 | ${finalResult.symbols.join(' | ')} | 🎰\n${finalResult.message}\n💰 Neuer Kontostand: $${newBalance}`;
+    await sentMessage.edit(content);
+}
+
 client.on('ready', () => {
     console.log(`Bot ist bereit! Eingeloggt als ${client.user.tag}`);
     deployCommands();
@@ -254,9 +280,7 @@ client.on('messageCreate', async message => {
         const newBalance = userBalance - betAmount + result.winnings;
         setUserMoney(message.author.id, newBalance);
         
-        const slotDisplay = `🎰 | ${result.symbols.join(' | ')} | 🎰`;
-        const response = `${message.member.displayName} setzt $${betAmount}!\n${slotDisplay}\n${result.message}\n💰 Neuer Kontostand: $${newBalance}`;
-        await message.channel.send(response);
+        await playSlotAnimation(message, message.member.displayName, betAmount, result);
     }
 });
 
