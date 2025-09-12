@@ -7,9 +7,9 @@ const lastDailyReward = new Map();
 const jackpotPool = { amount: 1000 };
 const activeGames = new Map();
 
-// Lottery system
-const lotteryPool = { amount: 0, entries: new Map(), lastDraw: null, nextDraw: null };
-const LOTTO_ENTRY_COST = 50;
+// Lottery system (6aus49)
+const lotteryPool = { amount: 0, tickets: new Map(), lastDraw: null, nextDraw: null };
+const LOTTO_TICKET_COST = 120; // 1.20 Euro = 120 Cent
 
 // Database connection
 const pool = new Pool({
@@ -39,11 +39,13 @@ async function initDatabase() {
         `);
         
         await pool.query(`
-            CREATE TABLE IF NOT EXISTS lottery_entries (
+            CREATE TABLE IF NOT EXISTS lottery_tickets (
                 user_id VARCHAR(255),
-                number INTEGER,
+                ticket_id SERIAL,
+                numbers INTEGER[] NOT NULL,
+                superzahl INTEGER NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (user_id, number)
+                PRIMARY KEY (user_id, ticket_id)
             )
         `);
         
@@ -78,13 +80,17 @@ async function loadData() {
             }
         }
         
-        // Load lottery entries
-        const lotteryResult = await pool.query('SELECT user_id, number FROM lottery_entries');
+        // Load lottery tickets
+        const lotteryResult = await pool.query('SELECT user_id, ticket_id, numbers, superzahl FROM lottery_tickets');
         for (const row of lotteryResult.rows) {
-            if (!lotteryPool.entries.has(row.user_id)) {
-                lotteryPool.entries.set(row.user_id, []);
+            if (!lotteryPool.tickets.has(row.user_id)) {
+                lotteryPool.tickets.set(row.user_id, []);
             }
-            lotteryPool.entries.get(row.user_id).push(row.number);
+            lotteryPool.tickets.get(row.user_id).push({
+                id: row.ticket_id,
+                numbers: row.numbers,
+                superzahl: row.superzahl
+            });
         }
         
         console.log(`✅ Daten aus Datenbank geladen (${userResult.rows.length} Spieler)`);
@@ -119,23 +125,22 @@ async function saveGameState(key, value) {
     }
 }
 
-async function saveLotteryEntry(userId, number) {
+async function saveLotteryTicket(userId, numbers, superzahl) {
     try {
         await pool.query(`
-            INSERT INTO lottery_entries (user_id, number) 
-            VALUES ($1, $2)
-            ON CONFLICT (user_id, number) DO NOTHING
-        `, [userId, number]);
+            INSERT INTO lottery_tickets (user_id, numbers, superzahl) 
+            VALUES ($1, $2, $3)
+        `, [userId, numbers, superzahl]);
     } catch (error) {
-        console.error('❌ Fehler beim Speichern des Lotto-Eintrags:', error);
+        console.error('❌ Fehler beim Speichern des Lotto-Tickets:', error);
     }
 }
 
-async function clearLotteryEntries() {
+async function clearLotteryTickets() {
     try {
-        await pool.query('DELETE FROM lottery_entries');
+        await pool.query('DELETE FROM lottery_tickets');
     } catch (error) {
-        console.error('❌ Fehler beim Löschen der Lotto-Einträge:', error);
+        console.error('❌ Fehler beim Löschen der Lotto-Tickets:', error);
     }
 }
 
@@ -749,15 +754,29 @@ async function playScratchAnimation(message, playerName, betAmount, finalResult)
     await sentMessage.edit(content);
 }
 
-// Lottery System Functions
+// Lottery System Functions (6aus49)
 function initializeLotteryWeek() {
     if (!lotteryPool.nextDraw) {
         const now = new Date();
-        const nextSunday = new Date(now);
-        nextSunday.setDate(now.getDate() + (7 - now.getDay()));
-        nextSunday.setHours(20, 0, 0, 0); // Sunday 8 PM
-        lotteryPool.nextDraw = nextSunday.toISOString();
+        const nextWednesday = getNextDrawDate(now, 3); // Wednesday = 3
+        lotteryPool.nextDraw = nextWednesday.toISOString();
     }
+}
+
+function getNextDrawDate(currentDate, targetDay) {
+    const date = new Date(currentDate);
+    const dayDiff = (targetDay - date.getDay() + 7) % 7;
+    if (dayDiff === 0 && date.getHours() >= 18) {
+        // If today is draw day but after 18:00, next draw
+        date.setDate(date.getDate() + 7);
+    } else if (dayDiff === 0) {
+        // Same day, before 18:00
+        date.setDate(date.getDate());
+    } else {
+        date.setDate(date.getDate() + dayDiff);
+    }
+    date.setHours(18, 0, 0, 0); // 18:00 (6 PM)
+    return date;
 }
 
 function getTimeUntilDraw() {
@@ -776,89 +795,164 @@ function getTimeUntilDraw() {
     return { days, hours, minutes };
 }
 
-async function addLotteryEntry(userId, number) {
-    if (!lotteryPool.entries.has(userId)) {
-        lotteryPool.entries.set(userId, []);
+function generateRandomNumbers() {
+    const numbers = [];
+    while (numbers.length < 6) {
+        const num = Math.floor(Math.random() * 49) + 1;
+        if (!numbers.includes(num)) {
+            numbers.push(num);
+        }
+    }
+    return numbers.sort((a, b) => a - b);
+}
+
+async function buyLotteryTicket(userId, numbers = null, superzahl = null) {
+    if (!lotteryPool.tickets.has(userId)) {
+        lotteryPool.tickets.set(userId, []);
     }
     
-    const userEntries = lotteryPool.entries.get(userId);
-    if (userEntries.includes(number)) {
-        return { success: false, reason: 'Zahl bereits gewählt' };
+    // Validate or generate numbers
+    if (!numbers) {
+        numbers = generateRandomNumbers();
+    } else {
+        if (numbers.length !== 6) {
+            return { success: false, reason: 'Du musst genau 6 Zahlen wählen' };
+        }
+        
+        const uniqueNumbers = [...new Set(numbers)];
+        if (uniqueNumbers.length !== 6) {
+            return { success: false, reason: 'Alle Zahlen müssen unterschiedlich sein' };
+        }
+        
+        for (const num of numbers) {
+            if (num < 1 || num > 49) {
+                return { success: false, reason: 'Zahlen müssen zwischen 1 und 49 liegen' };
+            }
+        }
+        numbers = numbers.sort((a, b) => a - b);
     }
     
-    if (number < 1 || number > 100) {
-        return { success: false, reason: 'Zahl muss zwischen 1 und 100 liegen' };
+    // Generate or validate superzahl
+    if (superzahl === null) {
+        superzahl = Math.floor(Math.random() * 10);
+    } else if (superzahl < 0 || superzahl > 9) {
+        return { success: false, reason: 'Superzahl muss zwischen 0 und 9 liegen' };
     }
     
-    userEntries.push(number);
-    lotteryPool.amount += LOTTO_ENTRY_COST;
+    const userTickets = lotteryPool.tickets.get(userId);
+    const ticketId = Date.now() + Math.random();
+    
+    const ticket = {
+        id: ticketId,
+        numbers: numbers,
+        superzahl: superzahl
+    };
+    
+    userTickets.push(ticket);
+    lotteryPool.amount += LOTTO_TICKET_COST;
     
     // Save to database
-    await saveLotteryEntry(userId, number);
+    await saveLotteryTicket(userId, numbers, superzahl);
     await saveGameState('lottery_amount', lotteryPool.amount);
     
-    return { success: true, entries: userEntries.length };
+    return { success: true, ticket: ticket, ticketCount: userTickets.length };
 }
 
 function getUserLotteryStats(userId) {
-    const userEntries = lotteryPool.entries.get(userId) || [];
-    const totalEntries = Array.from(lotteryPool.entries.values()).reduce((sum, arr) => sum + arr.length, 0);
-    const winChance = totalEntries > 0 ? (userEntries.length / totalEntries * 100).toFixed(2) : 0;
+    const userTickets = lotteryPool.tickets.get(userId) || [];
+    const totalTickets = Array.from(lotteryPool.tickets.values()).reduce((sum, arr) => sum + arr.length, 0);
     
     return {
-        entries: userEntries.length,
-        numbers: userEntries,
-        winChance: winChance,
-        totalEntries: totalEntries
+        tickets: userTickets.length,
+        totalTickets: totalTickets,
+        userTickets: userTickets
     };
 }
 
-async function performLotteryDraw() {
-    const allEntries = [];
+function checkWinning(userNumbers, userSuperzahl, winningNumbers, winningSuperzahl) {
+    const matches = userNumbers.filter(num => winningNumbers.includes(num)).length;
+    const superMatch = userSuperzahl === winningSuperzahl;
     
-    // Collect all entries with user info
-    for (const [userId, numbers] of lotteryPool.entries.entries()) {
-        for (const number of numbers) {
-            allEntries.push({ userId, number });
+    // Prize categories (6aus49)
+    if (matches === 6 && superMatch) return { category: 1, name: 'Jackpot (6+SZ)', multiplier: 1000000 };
+    if (matches === 6) return { category: 2, name: '6 Richtige', multiplier: 100000 };
+    if (matches === 5 && superMatch) return { category: 3, name: '5+SZ', multiplier: 10000 };
+    if (matches === 5) return { category: 4, name: '5 Richtige', multiplier: 5000 };
+    if (matches === 4 && superMatch) return { category: 5, name: '4+SZ', multiplier: 500 };
+    if (matches === 4) return { category: 6, name: '4 Richtige', multiplier: 100 };
+    if (matches === 3 && superMatch) return { category: 7, name: '3+SZ', multiplier: 50 };
+    if (matches === 3) return { category: 8, name: '3 Richtige', multiplier: 20 };
+    if (matches === 2 && superMatch) return { category: 9, name: '2+SZ', multiplier: 10 };
+    
+    return null;
+}
+
+async function performLotteryDraw() {
+    const allTickets = [];
+    
+    // Collect all tickets
+    for (const [userId, tickets] of lotteryPool.tickets.entries()) {
+        for (const ticket of tickets) {
+            allTickets.push({ userId, ticket });
         }
     }
     
-    if (allEntries.length === 0) {
-        // No entries, reset
+    if (allTickets.length === 0) {
+        // No tickets, reset
         lotteryPool.amount = 0;
-        lotteryPool.entries.clear();
+        lotteryPool.tickets.clear();
         return null;
     }
     
-    // Pick random winner
-    const winner = allEntries[Math.floor(Math.random() * allEntries.length)];
-    const winnings = Math.floor(lotteryPool.amount * 0.8); // 80% to winner, 20% stays in pool
+    // Generate winning numbers
+    const winningNumbers = generateRandomNumbers();
+    const winningSuperzahl = Math.floor(Math.random() * 10);
     
-    // Add winnings to user
-    const currentMoney = getUserMoney(winner.userId);
-    setUserMoney(winner.userId, currentMoney + winnings);
+    // Check all tickets for wins
+    const winners = [];
+    let totalPayout = 0;
+    
+    for (const { userId, ticket } of allTickets) {
+        const win = checkWinning(ticket.numbers, ticket.superzahl, winningNumbers, winningSuperzahl);
+        if (win) {
+            const winnings = Math.min(win.multiplier, Math.floor(lotteryPool.amount * 0.1)); // Max 10% of pool
+            winners.push({
+                userId,
+                ticket,
+                category: win.category,
+                name: win.name,
+                winnings
+            });
+            totalPayout += winnings;
+            
+            // Add winnings to user
+            const currentMoney = getUserMoney(userId);
+            setUserMoney(userId, currentMoney + winnings);
+        }
+    }
     
     const result = {
-        winner: winner,
-        winnings: winnings,
-        winningNumber: winner.number,
-        totalEntries: allEntries.length,
-        participants: lotteryPool.entries.size
+        winningNumbers,
+        winningSuperzahl,
+        winners,
+        totalTickets: allTickets.length,
+        participants: lotteryPool.tickets.size,
+        totalPayout
     };
     
-    // Reset for next week
-    lotteryPool.amount = Math.floor(lotteryPool.amount * 0.2); // Keep 20%
-    lotteryPool.entries.clear();
+    // Reset for next draw
+    lotteryPool.amount = Math.max(1000, lotteryPool.amount - totalPayout); // Keep minimum pool
+    lotteryPool.tickets.clear();
     lotteryPool.lastDraw = new Date().toISOString();
     
-    // Set next draw
-    const nextDraw = new Date();
-    nextDraw.setDate(nextDraw.getDate() + 7);
-    nextDraw.setHours(20, 0, 0, 0);
-    lotteryPool.nextDraw = nextDraw.toISOString();
+    // Set next draw (alternating Wed/Sat)
+    const now = new Date();
+    const lastDrawDay = new Date(lotteryPool.lastDraw).getDay();
+    const nextDrawDay = lastDrawDay === 3 ? 6 : 3; // Wed=3, Sat=6
+    lotteryPool.nextDraw = getNextDrawDate(now, nextDrawDay).toISOString();
     
     // Save to database
-    await clearLotteryEntries();
+    await clearLotteryTickets();
     await saveGameState('lottery_amount', lotteryPool.amount);
     await saveGameState('lottery_last_draw', lotteryPool.lastDraw);
     await saveGameState('lottery_next_draw', lotteryPool.nextDraw);
@@ -879,8 +973,8 @@ client.on('ready', async () => {
         if (timeLeft && timeLeft.expired) {
             const result = await performLotteryDraw();
             if (result) {
-                // TODO: Announce winner in a channel
-                console.log(`🎉 Lottery winner: ${result.winner.userId} won $${result.winnings} with number ${result.winningNumber}`);
+                console.log(`🎉 Lotto 6aus49 Ziehung: ${result.winningNumbers.join(', ')} | SZ: ${result.winningSuperzahl}`);
+                console.log(`🏆 ${result.winners.length} Gewinner, Gesamtausschüttung: $${result.totalPayout}`);
             }
         }
     }, 60 * 60 * 1000); // Check every hour
@@ -1254,8 +1348,9 @@ client.on('messageCreate', async message => {
         
         `🏆 **Spezial:**\n` +
         `?jackpot - Jackpot Pool anzeigen\n` +
-        `?lotto status - Wöchentliches Lotto Status\n` +
-        `?lotto <zahl> - Lotto Zahl setzen ($50)\n` +
+        `?lotto status - Lotto 6aus49 Status\n` +
+        `?lotto buy - Zufälliges Lotto-Ticket ($120)\n` +
+        `?lotto 1,2,3,4,5,6 [sz] - Eigene Zahlen wählen\n` +
         `?risk - Original Risk Command\n\n` +
         
         `**Startguthaben:** $500 für neue Spieler\n` +
@@ -1267,29 +1362,33 @@ client.on('messageCreate', async message => {
         const timeLeft = getTimeUntilDraw();
         const userStats = getUserLotteryStats(message.author.id);
         
-        let content = `🎟️ **WÖCHENTLICHES LOTTO** 🎟️\n\n`;
+        let content = `🎟️ **LOTTO 6aus49** 🎟️\n\n`;
         content += `💰 **Pool:** $${lotteryPool.amount}\n`;
-        content += `🎫 **Einsatz:** $${LOTTO_ENTRY_COST} pro Zahl\n`;
-        content += `📊 **Gesamt Einträge:** ${userStats.totalEntries}\n`;
-        content += `👥 **Teilnehmer:** ${lotteryPool.entries.size}\n\n`;
+        content += `🎫 **Ticket-Preis:** $${LOTTO_TICKET_COST}\n`;
+        content += `📊 **Gesamt Tickets:** ${userStats.totalTickets}\n`;
+        content += `👥 **Teilnehmer:** ${lotteryPool.tickets.size}\n\n`;
         
         if (timeLeft) {
             if (timeLeft.expired) {
                 content += `⏰ **Ziehung läuft...** Ergebnisse kommen bald!\n\n`;
             } else {
-                content += `⏰ **Nächste Ziehung:** ${timeLeft.days}d ${timeLeft.hours}h ${timeLeft.minutes}m\n\n`;
+                const drawDay = new Date(lotteryPool.nextDraw).getDay() === 3 ? 'Mittwoch' : 'Samstag';
+                content += `⏰ **Nächste Ziehung:** ${drawDay} in ${timeLeft.days}d ${timeLeft.hours}h ${timeLeft.minutes}m\n\n`;
             }
         }
         
-        content += `**Deine Statistiken:**\n`;
-        content += `🎫 Deine Einträge: ${userStats.entries}\n`;
-        if (userStats.entries > 0) {
-            content += `🔢 Deine Zahlen: ${userStats.numbers.join(', ')}\n`;
-            content += `📈 Gewinnchance: ${userStats.winChance}%\n`;
+        content += `**Deine Tickets:**\n`;
+        content += `🎫 Anzahl: ${userStats.tickets}\n`;
+        if (userStats.tickets > 0) {
+            content += `**Deine Tipps:**\n`;
+            for (const ticket of userStats.userTickets) {
+                content += `🔢 ${ticket.numbers.join(', ')} | SZ: ${ticket.superzahl}\n`;
+            }
         }
         
         content += `\n**Befehle:**\n`;
-        content += `?lotto <zahl> - Zahl setzen (1-100)\n`;
+        content += `?lotto buy - Zufälliges Ticket kaufen\n`;
+        content += `?lotto 1,2,3,4,5,6 [sz] - Eigene Zahlen wählen\n`;
         content += `?lotto status - Status anzeigen`;
         
         await message.channel.send(content);
@@ -1298,15 +1397,9 @@ client.on('messageCreate', async message => {
         const args = message.content.split(' ');
         if (args[1] === 'status') return; // Handled above
         
-        const number = parseInt(args[1]);
-        if (isNaN(number)) {
-            await message.channel.send('❌ Bitte gib eine gültige Zahl ein! (1-100)\nBeispiel: ?lotto 42');
-            return;
-        }
-        
         const userBalance = getUserMoney(message.author.id);
-        if (userBalance < LOTTO_ENTRY_COST) {
-            await message.channel.send(`❌ Du brauchst mindestens $${LOTTO_ENTRY_COST} für einen Lotto-Eintrag!`);
+        if (userBalance < LOTTO_TICKET_COST) {
+            await message.channel.send(`❌ Du brauchst mindestens $${LOTTO_TICKET_COST} für ein Lotto-Ticket!`);
             return;
         }
         
@@ -1316,19 +1409,48 @@ client.on('messageCreate', async message => {
             return;
         }
         
-        const result = await addLotteryEntry(message.author.id, number);
+        let numbers = null;
+        let superzahl = null;
+        
+        if (args[1] === 'buy') {
+            // Random ticket
+        } else {
+            // Parse custom numbers
+            const numberStr = args[1];
+            if (numberStr.includes(',')) {
+                const parts = numberStr.split(',').map(n => parseInt(n.trim()));
+                if (parts.some(isNaN)) {
+                    await message.channel.send('❌ Ungültige Zahlen! Format: ?lotto 1,2,3,4,5,6 [superzahl]');
+                    return;
+                }
+                numbers = parts;
+                
+                if (args[2]) {
+                    superzahl = parseInt(args[2]);
+                    if (isNaN(superzahl)) {
+                        await message.channel.send('❌ Ungültige Superzahl! Beispiel: ?lotto 1,2,3,4,5,6 7');
+                        return;
+                    }
+                }
+            } else {
+                await message.channel.send('❌ Format: ?lotto buy ODER ?lotto 1,2,3,4,5,6 [superzahl]');
+                return;
+            }
+        }
+        
+        const result = await buyLotteryTicket(message.author.id, numbers, superzahl);
         if (!result.success) {
             await message.channel.send(`❌ ${result.reason}`);
             return;
         }
         
         // Deduct money
-        setUserMoney(message.author.id, userBalance - LOTTO_ENTRY_COST);
+        setUserMoney(message.author.id, userBalance - LOTTO_TICKET_COST);
         
-        const userStats = getUserLotteryStats(message.author.id);
         const newBalance = getUserMoney(message.author.id);
+        const ticket = result.ticket;
         
-        await message.channel.send(`🎟️ **${message.member.displayName}** setzt auf Zahl **${number}**!\n💰 $${LOTTO_ENTRY_COST} bezahlt\n🎫 Du hast jetzt ${userStats.entries} Einträge\n📈 Gewinnchance: ${userStats.winChance}%\n💳 Neuer Kontostand: $${newBalance}`);
+        await message.channel.send(`🎟️ **${message.member.displayName}** kauft Lotto-Ticket!\n🔢 **Zahlen:** ${ticket.numbers.join(', ')}\n⭐ **Superzahl:** ${ticket.superzahl}\n💰 $${LOTTO_TICKET_COST} bezahlt\n🎫 Du hast jetzt ${result.ticketCount} Ticket(s)\n💳 Neuer Kontostand: $${newBalance}`);
     
     } else if (message.content === '?stats' && message.member.permissions.has('ADMINISTRATOR')) {
         try {
