@@ -8,6 +8,10 @@ const lastDailyReward = new Map();
 const jackpotPool = { amount: 1000 };
 const activeGames = new Map();
 
+// Lottery system
+const lotteryPool = { amount: 0, entries: new Map(), lastDraw: null, nextDraw: null };
+const LOTTO_ENTRY_COST = 50;
+
 // Data persistence
 const dataFile = path.join(__dirname, 'gamedata.json');
 
@@ -16,6 +20,12 @@ function saveData() {
         userMoney: Object.fromEntries(userMoney),
         lastDailyReward: Object.fromEntries(lastDailyReward),
         jackpotPool: jackpotPool,
+        lotteryPool: {
+            amount: lotteryPool.amount,
+            entries: Object.fromEntries(lotteryPool.entries),
+            lastDraw: lotteryPool.lastDraw,
+            nextDraw: lotteryPool.nextDraw
+        },
         lastSave: new Date().toISOString()
     };
     
@@ -49,6 +59,19 @@ function loadData() {
             // Load jackpot pool
             if (data.jackpotPool) {
                 jackpotPool.amount = data.jackpotPool.amount || 1000;
+            }
+            
+            // Load lottery pool
+            if (data.lotteryPool) {
+                lotteryPool.amount = data.lotteryPool.amount || 0;
+                lotteryPool.lastDraw = data.lotteryPool.lastDraw;
+                lotteryPool.nextDraw = data.lotteryPool.nextDraw;
+                
+                if (data.lotteryPool.entries) {
+                    for (const [userId, numbers] of Object.entries(data.lotteryPool.entries)) {
+                        lotteryPool.entries.set(userId, numbers);
+                    }
+                }
             }
             
             console.log(`✅ Spieldaten geladen (${Object.keys(data.userMoney || {}).length} Spieler)`);
@@ -656,15 +679,137 @@ async function playScratchAnimation(message, playerName, betAmount, finalResult)
     await sentMessage.edit(content);
 }
 
+// Lottery System Functions
+function initializeLotteryWeek() {
+    if (!lotteryPool.nextDraw) {
+        const now = new Date();
+        const nextSunday = new Date(now);
+        nextSunday.setDate(now.getDate() + (7 - now.getDay()));
+        nextSunday.setHours(20, 0, 0, 0); // Sunday 8 PM
+        lotteryPool.nextDraw = nextSunday.toISOString();
+    }
+}
+
+function getTimeUntilDraw() {
+    if (!lotteryPool.nextDraw) return null;
+    
+    const now = new Date();
+    const drawTime = new Date(lotteryPool.nextDraw);
+    const timeDiff = drawTime.getTime() - now.getTime();
+    
+    if (timeDiff <= 0) return { expired: true };
+    
+    const days = Math.floor(timeDiff / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((timeDiff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const minutes = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60));
+    
+    return { days, hours, minutes };
+}
+
+function addLotteryEntry(userId, number) {
+    if (!lotteryPool.entries.has(userId)) {
+        lotteryPool.entries.set(userId, []);
+    }
+    
+    const userEntries = lotteryPool.entries.get(userId);
+    if (userEntries.includes(number)) {
+        return { success: false, reason: 'Zahl bereits gewählt' };
+    }
+    
+    if (number < 1 || number > 100) {
+        return { success: false, reason: 'Zahl muss zwischen 1 und 100 liegen' };
+    }
+    
+    userEntries.push(number);
+    lotteryPool.amount += LOTTO_ENTRY_COST;
+    saveData();
+    
+    return { success: true, entries: userEntries.length };
+}
+
+function getUserLotteryStats(userId) {
+    const userEntries = lotteryPool.entries.get(userId) || [];
+    const totalEntries = Array.from(lotteryPool.entries.values()).reduce((sum, arr) => sum + arr.length, 0);
+    const winChance = totalEntries > 0 ? (userEntries.length / totalEntries * 100).toFixed(2) : 0;
+    
+    return {
+        entries: userEntries.length,
+        numbers: userEntries,
+        winChance: winChance,
+        totalEntries: totalEntries
+    };
+}
+
+function performLotteryDraw() {
+    const allEntries = [];
+    
+    // Collect all entries with user info
+    for (const [userId, numbers] of lotteryPool.entries.entries()) {
+        for (const number of numbers) {
+            allEntries.push({ userId, number });
+        }
+    }
+    
+    if (allEntries.length === 0) {
+        // No entries, reset
+        lotteryPool.amount = 0;
+        lotteryPool.entries.clear();
+        return null;
+    }
+    
+    // Pick random winner
+    const winner = allEntries[Math.floor(Math.random() * allEntries.length)];
+    const winnings = Math.floor(lotteryPool.amount * 0.8); // 80% to winner, 20% stays in pool
+    
+    // Add winnings to user
+    const currentMoney = getUserMoney(winner.userId);
+    setUserMoney(winner.userId, currentMoney + winnings);
+    
+    const result = {
+        winner: winner,
+        winnings: winnings,
+        winningNumber: winner.number,
+        totalEntries: allEntries.length,
+        participants: lotteryPool.entries.size
+    };
+    
+    // Reset for next week
+    lotteryPool.amount = Math.floor(lotteryPool.amount * 0.2); // Keep 20%
+    lotteryPool.entries.clear();
+    lotteryPool.lastDraw = new Date().toISOString();
+    
+    // Set next draw
+    const nextDraw = new Date();
+    nextDraw.setDate(nextDraw.getDate() + 7);
+    nextDraw.setHours(20, 0, 0, 0);
+    lotteryPool.nextDraw = nextDraw.toISOString();
+    
+    saveData();
+    return result;
+}
+
 client.on('ready', () => {
     console.log(`Bot ist bereit! Eingeloggt als ${client.user.tag}`);
     loadData(); // Load saved data on startup
+    initializeLotteryWeek(); // Initialize lottery
     deployCommands();
     
     // Auto-save every 5 minutes
     setInterval(() => {
         saveData();
     }, 5 * 60 * 1000);
+    
+    // Check for lottery draw every hour
+    setInterval(() => {
+        const timeLeft = getTimeUntilDraw();
+        if (timeLeft && timeLeft.expired) {
+            const result = performLotteryDraw();
+            if (result) {
+                // TODO: Announce winner in a channel
+                console.log(`🎉 Lottery winner: ${result.winner.userId} won $${result.winnings} with number ${result.winningNumber}`);
+            }
+        }
+    }, 60 * 60 * 1000); // Check every hour
 });
 
 async function handleRiskCommand(member, channelOrInteraction) {
@@ -1035,12 +1180,81 @@ client.on('messageCreate', async message => {
         
         `🏆 **Spezial:**\n` +
         `?jackpot - Jackpot Pool anzeigen\n` +
+        `?lotto status - Wöchentliches Lotto Status\n` +
+        `?lotto <zahl> - Lotto Zahl setzen ($50)\n` +
         `?risk - Original Risk Command\n\n` +
         
         `**Startguthaben:** $500 für neue Spieler\n` +
         `**Tipp:** Beginne mit kleinen Einsätzen!`;
         
         await message.channel.send(helpText);
+    
+    } else if (message.content === '?lotto status') {
+        const timeLeft = getTimeUntilDraw();
+        const userStats = getUserLotteryStats(message.author.id);
+        
+        let content = `🎟️ **WÖCHENTLICHES LOTTO** 🎟️\n\n`;
+        content += `💰 **Pool:** $${lotteryPool.amount}\n`;
+        content += `🎫 **Einsatz:** $${LOTTO_ENTRY_COST} pro Zahl\n`;
+        content += `📊 **Gesamt Einträge:** ${userStats.totalEntries}\n`;
+        content += `👥 **Teilnehmer:** ${lotteryPool.entries.size}\n\n`;
+        
+        if (timeLeft) {
+            if (timeLeft.expired) {
+                content += `⏰ **Ziehung läuft...** Ergebnisse kommen bald!\n\n`;
+            } else {
+                content += `⏰ **Nächste Ziehung:** ${timeLeft.days}d ${timeLeft.hours}h ${timeLeft.minutes}m\n\n`;
+            }
+        }
+        
+        content += `**Deine Statistiken:**\n`;
+        content += `🎫 Deine Einträge: ${userStats.entries}\n`;
+        if (userStats.entries > 0) {
+            content += `🔢 Deine Zahlen: ${userStats.numbers.join(', ')}\n`;
+            content += `📈 Gewinnchance: ${userStats.winChance}%\n`;
+        }
+        
+        content += `\n**Befehle:**\n`;
+        content += `?lotto <zahl> - Zahl setzen (1-100)\n`;
+        content += `?lotto status - Status anzeigen`;
+        
+        await message.channel.send(content);
+    
+    } else if (message.content.startsWith('?lotto ')) {
+        const args = message.content.split(' ');
+        if (args[1] === 'status') return; // Handled above
+        
+        const number = parseInt(args[1]);
+        if (isNaN(number)) {
+            await message.channel.send('❌ Bitte gib eine gültige Zahl ein! (1-100)\nBeispiel: ?lotto 42');
+            return;
+        }
+        
+        const userBalance = getUserMoney(message.author.id);
+        if (userBalance < LOTTO_ENTRY_COST) {
+            await message.channel.send(`❌ Du brauchst mindestens $${LOTTO_ENTRY_COST} für einen Lotto-Eintrag!`);
+            return;
+        }
+        
+        const timeLeft = getTimeUntilDraw();
+        if (timeLeft && timeLeft.expired) {
+            await message.channel.send('⏰ Die Ziehung läuft gerade! Warte auf die Ergebnisse.');
+            return;
+        }
+        
+        const result = addLotteryEntry(message.author.id, number);
+        if (!result.success) {
+            await message.channel.send(`❌ ${result.reason}`);
+            return;
+        }
+        
+        // Deduct money
+        setUserMoney(message.author.id, userBalance - LOTTO_ENTRY_COST);
+        
+        const userStats = getUserLotteryStats(message.author.id);
+        const newBalance = getUserMoney(message.author.id);
+        
+        await message.channel.send(`🎟️ **${message.member.displayName}** setzt auf Zahl **${number}**!\n💰 $${LOTTO_ENTRY_COST} bezahlt\n🎫 Du hast jetzt ${userStats.entries} Einträge\n📈 Gewinnchance: ${userStats.winChance}%\n💳 Neuer Kontostand: $${newBalance}`);
     
     } else if (message.content === '?backup' && message.member.permissions.has('ADMINISTRATOR')) {
         try {
