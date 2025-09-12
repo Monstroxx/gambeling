@@ -250,6 +250,31 @@ function playCoinflip(betAmount) {
     };
 }
 
+async function playCoinflipAnimation(message, playerName, betAmount, finalResult) {
+    // Initial flip message
+    let content = `🪙 **${playerName}** wirft eine Münze für $${betAmount}!\n🌪️ Die Münze wirbelt durch die Luft...`;
+    const sentMessage = await message.channel.send(content);
+    
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    
+    // Spinning animation
+    content = `🪙 **${playerName}** wirft eine Münze für $${betAmount}!\n🔄 Die Münze dreht sich...`;
+    await sentMessage.edit(content);
+    
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Landing
+    content = `🪙 **${playerName}** wirft eine Münze für $${betAmount}!\n⬇️ Die Münze landet...`;
+    await sentMessage.edit(content);
+    
+    await new Promise(resolve => setTimeout(resolve, 800));
+    
+    // Final result
+    const newBalance = getUserMoney(message.author.id);
+    content = `🪙 **${playerName}** wirft eine Münze für $${betAmount}!\n${finalResult.emoji} ${finalResult.result.toUpperCase()}!\n${finalResult.message}\n💰 Neuer Kontostand: $${newBalance}`;
+    await sentMessage.edit(content);
+}
+
 // Dice Game
 function playDice(betAmount) {
     const roll = Math.floor(Math.random() * 6) + 1;
@@ -276,6 +301,35 @@ function playDice(betAmount) {
         winnings: betAmount * multiplier,
         message: message
     };
+}
+
+async function playDiceAnimation(message, playerName, betAmount, finalResult) {
+    const diceEmojis = ['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
+    
+    // Initial roll message
+    let content = `🎲 **${playerName}** würfelt für $${betAmount}!\n🤏 Der Würfel wird geschüttelt...`;
+    const sentMessage = await message.channel.send(content);
+    
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Rolling animation - show random dice faces
+    for (let i = 0; i < 4; i++) {
+        const randomDice = diceEmojis[Math.floor(Math.random() * 6)];
+        content = `🎲 **${playerName}** würfelt für $${betAmount}!\n🎲 ${randomDice} Der Würfel rollt...`;
+        await sentMessage.edit(content);
+        await new Promise(resolve => setTimeout(resolve, 300));
+    }
+    
+    // Slowing down
+    content = `🎲 **${playerName}** würfelt für $${betAmount}!\n🛑 Der Würfel wird langsamer...`;
+    await sentMessage.edit(content);
+    
+    await new Promise(resolve => setTimeout(resolve, 800));
+    
+    // Final result
+    const newBalance = getUserMoney(message.author.id);
+    content = `🎲 **${playerName}** würfelt für $${betAmount}!\n${finalResult.message}\nGewinn: $${finalResult.winnings}\n💰 Neuer Kontostand: $${newBalance}`;
+    await sentMessage.edit(content);
 }
 
 // Roulette Game
@@ -307,6 +361,35 @@ function playRoulette(betAmount, bet) {
         winnings: winnings,
         message: message
     };
+}
+
+async function playRouletteAnimation(message, playerName, betAmount, bet, finalResult) {
+    // Initial spin message
+    let content = `🎰 **${playerName}** spielt Roulette für $${betAmount} auf "${bet}"!\n🌀 Das Rad dreht sich...`;
+    const sentMessage = await message.channel.send(content);
+    
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Spinning with random numbers
+    const numbers = Array.from({length: 37}, (_, i) => i);
+    for (let i = 0; i < 5; i++) {
+        const randomNum = numbers[Math.floor(Math.random() * numbers.length)];
+        const color = randomNum === 0 ? '🟢' : ([1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36].includes(randomNum) ? '🔴' : '⚫');
+        content = `🎰 **${playerName}** spielt Roulette für $${betAmount} auf "${bet}"!\n🎯 ${color} ${randomNum} ... Das Rad dreht sich noch...`;
+        await sentMessage.edit(content);
+        await new Promise(resolve => setTimeout(resolve, 400));
+    }
+    
+    // Slowing down
+    content = `🎰 **${playerName}** spielt Roulette für $${betAmount} auf "${bet}"!\n🐌 Das Rad wird langsamer... Die Kugel springt...`;
+    await sentMessage.edit(content);
+    
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    
+    // Final result
+    const newBalance = getUserMoney(message.author.id);
+    content = `🎰 **${playerName}** spielt Roulette für $${betAmount} auf "${bet}"!\n${finalResult.message}\nGewinn: $${finalResult.winnings}\n💰 Neuer Kontostand: $${newBalance}`;
+    await sentMessage.edit(content);
 }
 
 // Card Game Helper Functions
@@ -505,6 +588,74 @@ function spinWheel(betAmount) {
     }
 }
 
+async function spinWheelAnimation(message, playerName, betAmount, finalResult) {
+    const segments = ['💎', '⭐', '🍒', '🍋', '🍇', '❌'];
+    
+    // Initial spin message
+    let content = `🎡 **${playerName}** dreht das Glücksrad für $${betAmount}!\n🌪️ Das Rad dreht sich schnell...`;
+    const sentMessage = await message.channel.send(content);
+    
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Spinning animation with random segments
+    for (let i = 0; i < 6; i++) {
+        const randomSegment = segments[Math.floor(Math.random() * segments.length)];
+        content = `🎡 **${playerName}** dreht das Glücksrad für $${betAmount}!\n🎯 ${randomSegment} ... Das Rad dreht sich...`;
+        await sentMessage.edit(content);
+        await new Promise(resolve => setTimeout(resolve, 350));
+    }
+    
+    // Slowing down
+    content = `🎡 **${playerName}** dreht das Glücksrad für $${betAmount}!\n🐌 Das Rad wird langsamer...`;
+    await sentMessage.edit(content);
+    
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Final result
+    const newBalance = getUserMoney(message.author.id);
+    content = `🎡 **${playerName}** dreht das Glücksrad für $${betAmount}!\n🎯 Das Rad landet auf: ${finalResult.segment}\n${finalResult.message}\nGewinn: $${finalResult.winnings}\n💰 Neuer Kontostand: $${newBalance}`;
+    await sentMessage.edit(content);
+}
+
+async function playScratchAnimation(message, playerName, betAmount, finalResult) {
+    const symbols = ['🍒', '⭐', '💎', '🍋', '💰', '🎁'];
+    
+    // Initial scratch message
+    let content = `🎫 **${playerName}** kauft ein Rubbellos für $${betAmount}!\n🪙 Das Los wird freigerubbelt...`;
+    const sentMessage = await message.channel.send(content);
+    
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Revealing animation - show partial card
+    const partialCard1 = finalResult.card.slice(0, 3).map(s => Math.random() < 0.5 ? s : '❓').join(' ') + '\n' +
+                        '❓ ❓ ❓\n' +
+                        '❓ ❓ ❓';
+    
+    content = `🎫 **${playerName}** kauft ein Rubbellos für $${betAmount}!\n\`\`\`\n${partialCard1}\n\`\`\`\n🪙 Erste Reihe freigerubbelt...`;
+    await sentMessage.edit(content);
+    
+    await new Promise(resolve => setTimeout(resolve, 800));
+    
+    // Second reveal
+    const partialCard2 = finalResult.card.slice(0, 3).join(' ') + '\n' +
+                        finalResult.card.slice(3, 6).map(s => Math.random() < 0.7 ? s : '❓').join(' ') + '\n' +
+                        '❓ ❓ ❓';
+    
+    content = `🎫 **${playerName}** kauft ein Rubbellos für $${betAmount}!\n\`\`\`\n${partialCard2}\n\`\`\`\n🪙 Zweite Reihe wird freigerubbelt...`;
+    await sentMessage.edit(content);
+    
+    await new Promise(resolve => setTimeout(resolve, 800));
+    
+    // Final reveal
+    const cardDisplay = finalResult.card.slice(0, 3).join(' ') + '\n' + 
+                       finalResult.card.slice(3, 6).join(' ') + '\n' + 
+                       finalResult.card.slice(6, 9).join(' ');
+    
+    const newBalance = getUserMoney(message.author.id);
+    content = `🎫 **${playerName}** kauft ein Rubbellos für $${betAmount}!\n\`\`\`\n${cardDisplay}\n\`\`\`\n${finalResult.message}\nGewinn: $${finalResult.winnings}\n💰 Neuer Kontostand: $${newBalance}`;
+    await sentMessage.edit(content);
+}
+
 client.on('ready', () => {
     console.log(`Bot ist bereit! Eingeloggt als ${client.user.tag}`);
     loadData(); // Load saved data on startup
@@ -631,7 +782,7 @@ client.on('messageCreate', async message => {
         const newBalance = userBalance - betAmount + result.winnings;
         setUserMoney(message.author.id, newBalance);
         
-        await message.channel.send(`🪙 **${message.member.displayName}** wirft eine Münze für $${betAmount}!\n${result.emoji} ${result.result.toUpperCase()}!\n${result.message}\n💰 Neuer Kontostand: $${newBalance}`);
+        await playCoinflipAnimation(message, message.member.displayName, betAmount, result);
     
     } else if (message.content.startsWith('?dice')) {
         const args = message.content.split(' ');
@@ -652,7 +803,7 @@ client.on('messageCreate', async message => {
         const newBalance = userBalance - betAmount + result.winnings;
         setUserMoney(message.author.id, newBalance);
         
-        await message.channel.send(`🎲 **${message.member.displayName}** würfelt für $${betAmount}!\n${result.message}\nGewinn: $${result.winnings}\n💰 Neuer Kontostand: $${newBalance}`);
+        await playDiceAnimation(message, message.member.displayName, betAmount, result);
     
     } else if (message.content.startsWith('?roulette')) {
         const args = message.content.split(' ');
@@ -684,7 +835,7 @@ client.on('messageCreate', async message => {
         const newBalance = userBalance - betAmount + result.winnings;
         setUserMoney(message.author.id, newBalance);
         
-        await message.channel.send(`🎰 **${message.member.displayName}** spielt Roulette für $${betAmount} auf "${bet}"!\n${result.message}\nGewinn: $${result.winnings}\n💰 Neuer Kontostand: $${newBalance}`);
+        await playRouletteAnimation(message, message.member.displayName, betAmount, bet, result);
     
     } else if (message.content.startsWith('?scratch')) {
         const args = message.content.split(' ');
@@ -705,11 +856,7 @@ client.on('messageCreate', async message => {
         const newBalance = userBalance - betAmount + result.winnings;
         setUserMoney(message.author.id, newBalance);
         
-        const cardDisplay = result.card.slice(0, 3).join(' ') + '\n' + 
-                           result.card.slice(3, 6).join(' ') + '\n' + 
-                           result.card.slice(6, 9).join(' ');
-        
-        await message.channel.send(`🎫 **${message.member.displayName}** kauft ein Rubbellos für $${betAmount}!\n\`\`\`\n${cardDisplay}\n\`\`\`\n${result.message}\nGewinn: $${result.winnings}\n💰 Neuer Kontostand: $${newBalance}`);
+        await playScratchAnimation(message, message.member.displayName, betAmount, result);
     
     } else if (message.content.startsWith('?war')) {
         const args = message.content.split(' ');
@@ -751,7 +898,7 @@ client.on('messageCreate', async message => {
         const newBalance = userBalance - betAmount + result.winnings;
         setUserMoney(message.author.id, newBalance);
         
-        await message.channel.send(`🎡 **${message.member.displayName}** dreht das Glücksrad für $${betAmount}!\n🎯 Das Rad landet auf: ${result.segment}\n${result.message}\nGewinn: $${result.winnings}\n💰 Neuer Kontostand: $${newBalance}`);
+        await spinWheelAnimation(message, message.member.displayName, betAmount, result);
     
     } else if (message.content.startsWith('?blackjack')) {
         const args = message.content.split(' ');
