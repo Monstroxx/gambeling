@@ -1,7 +1,6 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, InteractionResponseType } = require('discord.js');
-const fs = require('fs');
-const path = require('path');
+const { Pool } = require('pg');
 
 const userMoney = new Map();
 const lastDailyReward = new Map();
@@ -12,74 +11,131 @@ const activeGames = new Map();
 const lotteryPool = { amount: 0, entries: new Map(), lastDraw: null, nextDraw: null };
 const LOTTO_ENTRY_COST = 50;
 
-// Data persistence
-const dataFile = path.join(__dirname, 'gamedata.json');
+// Database connection
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
 
-function saveData() {
-    const data = {
-        userMoney: Object.fromEntries(userMoney),
-        lastDailyReward: Object.fromEntries(lastDailyReward),
-        jackpotPool: jackpotPool,
-        lotteryPool: {
-            amount: lotteryPool.amount,
-            entries: Object.fromEntries(lotteryPool.entries),
-            lastDraw: lotteryPool.lastDraw,
-            nextDraw: lotteryPool.nextDraw
-        },
-        lastSave: new Date().toISOString()
-    };
-    
+// Database initialization
+async function initDatabase() {
     try {
-        fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
-        console.log('✅ Spieldaten gespeichert');
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS users (
+                user_id VARCHAR(255) PRIMARY KEY,
+                money INTEGER DEFAULT 500,
+                last_daily_reward TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS game_state (
+                key VARCHAR(255) PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS lottery_entries (
+                user_id VARCHAR(255),
+                number INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, number)
+            )
+        `);
+        
+        console.log('✅ Datenbank initialisiert');
     } catch (error) {
-        console.error('❌ Fehler beim Speichern der Daten:', error);
+        console.error('❌ Fehler beim Initialisieren der Datenbank:', error);
     }
 }
 
-function loadData() {
+async function loadData() {
     try {
-        if (fs.existsSync(dataFile)) {
-            const data = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
-            
-            // Load user money
-            if (data.userMoney) {
-                for (const [userId, money] of Object.entries(data.userMoney)) {
-                    userMoney.set(userId, money);
-                }
+        // Load user money and daily rewards
+        const userResult = await pool.query('SELECT user_id, money, last_daily_reward FROM users');
+        for (const row of userResult.rows) {
+            userMoney.set(row.user_id, row.money);
+            if (row.last_daily_reward) {
+                lastDailyReward.set(row.user_id, row.last_daily_reward.toISOString());
             }
-            
-            // Load daily rewards
-            if (data.lastDailyReward) {
-                for (const [userId, lastReward] of Object.entries(data.lastDailyReward)) {
-                    lastDailyReward.set(userId, lastReward);
-                }
-            }
-            
-            // Load jackpot pool
-            if (data.jackpotPool) {
-                jackpotPool.amount = data.jackpotPool.amount || 1000;
-            }
-            
-            // Load lottery pool
-            if (data.lotteryPool) {
-                lotteryPool.amount = data.lotteryPool.amount || 0;
-                lotteryPool.lastDraw = data.lotteryPool.lastDraw;
-                lotteryPool.nextDraw = data.lotteryPool.nextDraw;
-                
-                if (data.lotteryPool.entries) {
-                    for (const [userId, numbers] of Object.entries(data.lotteryPool.entries)) {
-                        lotteryPool.entries.set(userId, numbers);
-                    }
-                }
-            }
-            
-            console.log(`✅ Spieldaten geladen (${Object.keys(data.userMoney || {}).length} Spieler)`);
-        } else {
-            console.log('📁 Keine gespeicherten Daten gefunden - starte mit leeren Daten');
         }
+        
+        // Load game state (jackpot, lottery pool)
+        const stateResult = await pool.query('SELECT key, value FROM game_state');
+        for (const row of stateResult.rows) {
+            if (row.key === 'jackpot_amount') {
+                jackpotPool.amount = parseInt(row.value) || 1000;
+            } else if (row.key === 'lottery_amount') {
+                lotteryPool.amount = parseInt(row.value) || 0;
+            } else if (row.key === 'lottery_last_draw') {
+                lotteryPool.lastDraw = row.value;
+            } else if (row.key === 'lottery_next_draw') {
+                lotteryPool.nextDraw = row.value;
+            }
+        }
+        
+        // Load lottery entries
+        const lotteryResult = await pool.query('SELECT user_id, number FROM lottery_entries');
+        for (const row of lotteryResult.rows) {
+            if (!lotteryPool.entries.has(row.user_id)) {
+                lotteryPool.entries.set(row.user_id, []);
+            }
+            lotteryPool.entries.get(row.user_id).push(row.number);
+        }
+        
+        console.log(`✅ Daten aus Datenbank geladen (${userResult.rows.length} Spieler)`);
     } catch (error) {
         console.error('❌ Fehler beim Laden der Daten:', error);
+    }
+}
+
+async function saveUserMoney(userId, amount) {
+    try {
+        await pool.query(`
+            INSERT INTO users (user_id, money, updated_at) 
+            VALUES ($1, $2, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_id) 
+            DO UPDATE SET money = $2, updated_at = CURRENT_TIMESTAMP
+        `, [userId, amount]);
+    } catch (error) {
+        console.error('❌ Fehler beim Speichern des Guthabens:', error);
+    }
+}
+
+async function saveGameState(key, value) {
+    try {
+        await pool.query(`
+            INSERT INTO game_state (key, value, updated_at) 
+            VALUES ($1, $2, CURRENT_TIMESTAMP)
+            ON CONFLICT (key) 
+            DO UPDATE SET value = $2, updated_at = CURRENT_TIMESTAMP
+        `, [key, value.toString()]);
+    } catch (error) {
+        console.error('❌ Fehler beim Speichern des Spielstatus:', error);
+    }
+}
+
+async function saveLotteryEntry(userId, number) {
+    try {
+        await pool.query(`
+            INSERT INTO lottery_entries (user_id, number) 
+            VALUES ($1, $2)
+            ON CONFLICT (user_id, number) DO NOTHING
+        `, [userId, number]);
+    } catch (error) {
+        console.error('❌ Fehler beim Speichern des Lotto-Eintrags:', error);
+    }
+}
+
+async function clearLotteryEntries() {
+    try {
+        await pool.query('DELETE FROM lottery_entries');
+    } catch (error) {
+        console.error('❌ Fehler beim Löschen der Lotto-Einträge:', error);
     }
 }
 
@@ -153,8 +209,9 @@ function getUserMoney(userId) {
 }
 
 function setUserMoney(userId, amount) {
-    userMoney.set(userId, Math.max(0, amount));
-    saveData(); // Auto-save when money changes
+    const finalAmount = Math.max(0, amount);
+    userMoney.set(userId, finalAmount);
+    saveUserMoney(userId, finalAmount); // Auto-save to database
 }
 
 function canClaimDaily(userId) {
@@ -169,12 +226,25 @@ function canClaimDaily(userId) {
     return hoursDiff >= 24;
 }
 
-function claimDailyReward(userId) {
+async function claimDailyReward(userId) {
     const amount = Math.floor(Math.random() * 701) + 100;
     const currentMoney = getUserMoney(userId);
     setUserMoney(userId, currentMoney + amount);
-    lastDailyReward.set(userId, new Date().toISOString());
-    saveData(); // Save after daily reward
+    const timestamp = new Date().toISOString();
+    lastDailyReward.set(userId, timestamp);
+    
+    // Save daily reward timestamp to database
+    try {
+        await pool.query(`
+            INSERT INTO users (user_id, last_daily_reward, updated_at) 
+            VALUES ($1, $2, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_id) 
+            DO UPDATE SET last_daily_reward = $2, updated_at = CURRENT_TIMESTAMP
+        `, [userId, new Date(timestamp)]);
+    } catch (error) {
+        console.error('❌ Fehler beim Speichern der täglichen Belohnung:', error);
+    }
+    
     return amount;
 }
 
@@ -706,7 +776,7 @@ function getTimeUntilDraw() {
     return { days, hours, minutes };
 }
 
-function addLotteryEntry(userId, number) {
+async function addLotteryEntry(userId, number) {
     if (!lotteryPool.entries.has(userId)) {
         lotteryPool.entries.set(userId, []);
     }
@@ -722,7 +792,10 @@ function addLotteryEntry(userId, number) {
     
     userEntries.push(number);
     lotteryPool.amount += LOTTO_ENTRY_COST;
-    saveData();
+    
+    // Save to database
+    await saveLotteryEntry(userId, number);
+    await saveGameState('lottery_amount', lotteryPool.amount);
     
     return { success: true, entries: userEntries.length };
 }
@@ -740,7 +813,7 @@ function getUserLotteryStats(userId) {
     };
 }
 
-function performLotteryDraw() {
+async function performLotteryDraw() {
     const allEntries = [];
     
     // Collect all entries with user info
@@ -784,26 +857,27 @@ function performLotteryDraw() {
     nextDraw.setHours(20, 0, 0, 0);
     lotteryPool.nextDraw = nextDraw.toISOString();
     
-    saveData();
+    // Save to database
+    await clearLotteryEntries();
+    await saveGameState('lottery_amount', lotteryPool.amount);
+    await saveGameState('lottery_last_draw', lotteryPool.lastDraw);
+    await saveGameState('lottery_next_draw', lotteryPool.nextDraw);
+    
     return result;
 }
 
-client.on('ready', () => {
+client.on('ready', async () => {
     console.log(`Bot ist bereit! Eingeloggt als ${client.user.tag}`);
-    loadData(); // Load saved data on startup
+    await initDatabase(); // Initialize database tables
+    await loadData(); // Load saved data from database
     initializeLotteryWeek(); // Initialize lottery
     deployCommands();
     
-    // Auto-save every 5 minutes
-    setInterval(() => {
-        saveData();
-    }, 5 * 60 * 1000);
-    
     // Check for lottery draw every hour
-    setInterval(() => {
+    setInterval(async () => {
         const timeLeft = getTimeUntilDraw();
         if (timeLeft && timeLeft.expired) {
-            const result = performLotteryDraw();
+            const result = await performLotteryDraw();
             if (result) {
                 // TODO: Announce winner in a channel
                 console.log(`🎉 Lottery winner: ${result.winner.userId} won $${result.winnings} with number ${result.winningNumber}`);
@@ -871,13 +945,13 @@ client.on('messageCreate', async message => {
         await message.channel.send(`💰 **${message.member.displayName}** hat $${balance} auf dem Konto!`);
     } else if (message.content === '?daily') {
         if (canClaimDaily(message.author.id)) {
-            const amount = claimDailyReward(message.author.id);
+            const amount = await claimDailyReward(message.author.id);
             const newBalance = getUserMoney(message.author.id);
             await message.channel.send(`🎁 **${message.member.displayName}** hat die tägliche Belohnung von $${amount} erhalten!\n💰 Neuer Kontostand: $${newBalance}`);
         } else {
             const timeLeft = getTimeUntilNextDaily(message.author.id);
             if (timeLeft === 0) {
-                const amount = claimDailyReward(message.author.id);
+                const amount = await claimDailyReward(message.author.id);
                 const newBalance = getUserMoney(message.author.id);
                 await message.channel.send(`🎁 **${message.member.displayName}** hat die tägliche Belohnung von $${amount} erhalten!\n💰 Neuer Kontostand: $${newBalance}`);
             } else {
@@ -1242,7 +1316,7 @@ client.on('messageCreate', async message => {
             return;
         }
         
-        const result = addLotteryEntry(message.author.id, number);
+        const result = await addLotteryEntry(message.author.id, number);
         if (!result.success) {
             await message.channel.send(`❌ ${result.reason}`);
             return;
@@ -1256,19 +1330,19 @@ client.on('messageCreate', async message => {
         
         await message.channel.send(`🎟️ **${message.member.displayName}** setzt auf Zahl **${number}**!\n💰 $${LOTTO_ENTRY_COST} bezahlt\n🎫 Du hast jetzt ${userStats.entries} Einträge\n📈 Gewinnchance: ${userStats.winChance}%\n💳 Neuer Kontostand: $${newBalance}`);
     
-    } else if (message.content === '?backup' && message.member.permissions.has('ADMINISTRATOR')) {
+    } else if (message.content === '?stats' && message.member.permissions.has('ADMINISTRATOR')) {
         try {
-            saveData();
             const stats = {
                 players: userMoney.size,
                 totalMoney: Array.from(userMoney.values()).reduce((a, b) => a + b, 0),
                 jackpot: jackpotPool.amount,
+                lotteryPool: lotteryPool.amount,
                 activeGames: activeGames.size
             };
             
-            await message.channel.send(`💾 **Backup erstellt!**\n👥 Spieler: ${stats.players}\n💰 Gesamtgeld: $${stats.totalMoney}\n🎰 Jackpot: $${stats.jackpot}\n🎮 Aktive Spiele: ${stats.activeGames}`);
+            await message.channel.send(`📊 **CASINO STATISTIKEN** 📊\n👥 Spieler: ${stats.players}\n💰 Gesamtgeld: $${stats.totalMoney}\n🎰 Jackpot: $${stats.jackpot}\n🎟️ Lotto Pool: $${stats.lotteryPool}\n🎮 Aktive Spiele: ${stats.activeGames}`);
         } catch (error) {
-            await message.channel.send('❌ Fehler beim Erstellen des Backups!');
+            await message.channel.send('❌ Fehler beim Abrufen der Statistiken!');
         }
     }
 });
@@ -1281,16 +1355,16 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-// Graceful shutdown - save data before exit
-process.on('SIGINT', () => {
-    console.log('🛑 Bot wird beendet - speichere Daten...');
-    saveData();
+// Graceful shutdown - close database connections
+process.on('SIGINT', async () => {
+    console.log('🛑 Bot wird beendet - schließe Datenbankverbindungen...');
+    await pool.end();
     process.exit(0);
 });
 
-process.on('SIGTERM', () => {
-    console.log('🛑 Bot wird beendet - speichere Daten...');
-    saveData();
+process.on('SIGTERM', async () => {
+    console.log('🛑 Bot wird beendet - schließe Datenbankverbindungen...');
+    await pool.end();
     process.exit(0);
 });
 
