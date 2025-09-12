@@ -1,10 +1,64 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, InteractionResponseType } = require('discord.js');
+const fs = require('fs');
+const path = require('path');
 
 const userMoney = new Map();
 const lastDailyReward = new Map();
 const jackpotPool = { amount: 1000 };
 const activeGames = new Map();
+
+// Data persistence
+const dataFile = path.join(__dirname, 'gamedata.json');
+
+function saveData() {
+    const data = {
+        userMoney: Object.fromEntries(userMoney),
+        lastDailyReward: Object.fromEntries(lastDailyReward),
+        jackpotPool: jackpotPool,
+        lastSave: new Date().toISOString()
+    };
+    
+    try {
+        fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
+        console.log('✅ Spieldaten gespeichert');
+    } catch (error) {
+        console.error('❌ Fehler beim Speichern der Daten:', error);
+    }
+}
+
+function loadData() {
+    try {
+        if (fs.existsSync(dataFile)) {
+            const data = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
+            
+            // Load user money
+            if (data.userMoney) {
+                for (const [userId, money] of Object.entries(data.userMoney)) {
+                    userMoney.set(userId, money);
+                }
+            }
+            
+            // Load daily rewards
+            if (data.lastDailyReward) {
+                for (const [userId, lastReward] of Object.entries(data.lastDailyReward)) {
+                    lastDailyReward.set(userId, lastReward);
+                }
+            }
+            
+            // Load jackpot pool
+            if (data.jackpotPool) {
+                jackpotPool.amount = data.jackpotPool.amount || 1000;
+            }
+            
+            console.log(`✅ Spieldaten geladen (${Object.keys(data.userMoney || {}).length} Spieler)`);
+        } else {
+            console.log('📁 Keine gespeicherten Daten gefunden - starte mit leeren Daten');
+        }
+    } catch (error) {
+        console.error('❌ Fehler beim Laden der Daten:', error);
+    }
+}
 
 const client = new Client({
     intents: [
@@ -77,6 +131,7 @@ function getUserMoney(userId) {
 
 function setUserMoney(userId, amount) {
     userMoney.set(userId, Math.max(0, amount));
+    saveData(); // Auto-save when money changes
 }
 
 function canClaimDaily(userId) {
@@ -96,6 +151,7 @@ function claimDailyReward(userId) {
     const currentMoney = getUserMoney(userId);
     setUserMoney(userId, currentMoney + amount);
     lastDailyReward.set(userId, new Date().toISOString());
+    saveData(); // Save after daily reward
     return amount;
 }
 
@@ -451,7 +507,13 @@ function spinWheel(betAmount) {
 
 client.on('ready', () => {
     console.log(`Bot ist bereit! Eingeloggt als ${client.user.tag}`);
+    loadData(); // Load saved data on startup
     deployCommands();
+    
+    // Auto-save every 5 minutes
+    setInterval(() => {
+        saveData();
+    }, 5 * 60 * 1000);
 });
 
 async function handleRiskCommand(member, channelOrInteraction) {
@@ -832,6 +894,21 @@ client.on('messageCreate', async message => {
         `**Tipp:** Beginne mit kleinen Einsätzen!`;
         
         await message.channel.send(helpText);
+    
+    } else if (message.content === '?backup' && message.member.permissions.has('ADMINISTRATOR')) {
+        try {
+            saveData();
+            const stats = {
+                players: userMoney.size,
+                totalMoney: Array.from(userMoney.values()).reduce((a, b) => a + b, 0),
+                jackpot: jackpotPool.amount,
+                activeGames: activeGames.size
+            };
+            
+            await message.channel.send(`💾 **Backup erstellt!**\n👥 Spieler: ${stats.players}\n💰 Gesamtgeld: $${stats.totalMoney}\n🎰 Jackpot: $${stats.jackpot}\n🎮 Aktive Spiele: ${stats.activeGames}`);
+        } catch (error) {
+            await message.channel.send('❌ Fehler beim Erstellen des Backups!');
+        }
     }
 });
 
@@ -841,6 +918,19 @@ client.on('interactionCreate', async interaction => {
     if (interaction.commandName === 'risk') {
         await handleRiskCommand(interaction.member, interaction);
     }
+});
+
+// Graceful shutdown - save data before exit
+process.on('SIGINT', () => {
+    console.log('🛑 Bot wird beendet - speichere Daten...');
+    saveData();
+    process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+    console.log('🛑 Bot wird beendet - speichere Daten...');
+    saveData();
+    process.exit(0);
 });
 
 client.login(process.env.DISCORD_TOKEN);
