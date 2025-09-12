@@ -3,6 +3,8 @@ const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, Interactio
 
 const userMoney = new Map();
 const lastDailyReward = new Map();
+const jackpotPool = { amount: 1000 };
+const activeGames = new Map();
 
 const client = new Client({
     intents: [
@@ -175,9 +177,276 @@ async function playSlotAnimation(message, playerName, betAmount, finalResult) {
     await new Promise(resolve => setTimeout(resolve, 1000));
     
     // Final result
-    const newBalance = getUserMoney(message.author.id) - betAmount + finalResult.winnings;
+    const newBalance = getUserMoney(message.author.id);
     content = `${playerName} setzt $${betAmount}!\n🎰 | ${finalResult.symbols.join(' | ')} | 🎰\n${finalResult.message}\n💰 Neuer Kontostand: $${newBalance}`;
     await sentMessage.edit(content);
+}
+
+// Coinflip Game
+function playCoinflip(betAmount) {
+    const isHeads = Math.random() < 0.5;
+    return {
+        result: isHeads ? 'heads' : 'tails',
+        emoji: isHeads ? '🪙' : '🪙',
+        win: isHeads,
+        winnings: isHeads ? betAmount * 2 : 0,
+        message: isHeads ? 'KOPF! Du gewinnst!' : 'ZAHL! Du verlierst!'
+    };
+}
+
+// Dice Game
+function playDice(betAmount) {
+    const roll = Math.floor(Math.random() * 6) + 1;
+    let multiplier = 0;
+    let message = '';
+    
+    if (roll === 6) {
+        multiplier = 6;
+        message = '⚅ SECHS! Großer Gewinn!';
+    } else if (roll === 5) {
+        multiplier = 3;
+        message = '⚄ FÜNF! Guter Gewinn!';
+    } else if (roll >= 3) {
+        multiplier = 1.5;
+        message = `⚂ ${roll}! Kleiner Gewinn!`;
+    } else {
+        multiplier = 0;
+        message = `⚀ ${roll}! Leider kein Gewinn.`;
+    }
+    
+    return {
+        roll: roll,
+        multiplier: multiplier,
+        winnings: betAmount * multiplier,
+        message: message
+    };
+}
+
+// Roulette Game
+function playRoulette(betAmount, bet) {
+    const number = Math.floor(Math.random() * 37); // 0-36
+    const isRed = [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36].includes(number);
+    const isBlack = number > 0 && !isRed;
+    
+    let winnings = 0;
+    let message = '';
+    
+    if (bet === 'red' && isRed) {
+        winnings = betAmount * 2;
+        message = `🔴 ${number} ROT! Du gewinnst!`;
+    } else if (bet === 'black' && isBlack) {
+        winnings = betAmount * 2;
+        message = `⚫ ${number} SCHWARZ! Du gewinnst!`;
+    } else if (bet === number.toString()) {
+        winnings = betAmount * 36;
+        message = `🎯 ${number}! VOLLTREFFER! Riesiger Gewinn!`;
+    } else {
+        winnings = 0;
+        const color = number === 0 ? '🟢' : (isRed ? '🔴' : '⚫');
+        message = `${color} ${number}! Leider kein Gewinn.`;
+    }
+    
+    return {
+        number: number,
+        winnings: winnings,
+        message: message
+    };
+}
+
+// Card Game Helper Functions
+function createDeck() {
+    const suits = ['♠️', '♥️', '♦️', '♣️'];
+    const ranks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+    const deck = [];
+    
+    for (const suit of suits) {
+        for (const rank of ranks) {
+            deck.push({ rank, suit, value: getCardValue(rank) });
+        }
+    }
+    
+    return shuffleDeck(deck);
+}
+
+function shuffleDeck(deck) {
+    const shuffled = [...deck];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
+}
+
+function getCardValue(rank) {
+    if (rank === 'A') return 11;
+    if (['J', 'Q', 'K'].includes(rank)) return 10;
+    return parseInt(rank);
+}
+
+function calculateHandValue(hand) {
+    let value = 0;
+    let aces = 0;
+    
+    for (const card of hand) {
+        if (card.rank === 'A') {
+            aces++;
+            value += 11;
+        } else {
+            value += card.value;
+        }
+    }
+    
+    while (value > 21 && aces > 0) {
+        value -= 10;
+        aces--;
+    }
+    
+    return value;
+}
+
+function cardToString(card) {
+    return `${card.rank}${card.suit}`;
+}
+
+// Scratch Card Game
+function playScratchCard(betAmount) {
+    const symbols = ['🍒', '⭐', '💎', '🍋', '💰', '🎁'];
+    const card = [];
+    for (let i = 0; i < 9; i++) {
+        card.push(symbols[Math.floor(Math.random() * symbols.length)]);
+    }
+    
+    // Count symbol occurrences
+    const counts = {};
+    card.forEach(symbol => {
+        counts[symbol] = (counts[symbol] || 0) + 1;
+    });
+    
+    let winnings = 0;
+    let message = '';
+    
+    // Check for wins (3 or more of same symbol)
+    for (const [symbol, count] of Object.entries(counts)) {
+        if (count >= 3) {
+            let multiplier = 0;
+            if (symbol === '💎') multiplier = count * 10;
+            else if (symbol === '⭐') multiplier = count * 5;
+            else if (symbol === '💰') multiplier = count * 3;
+            else multiplier = count;
+            
+            winnings = Math.max(winnings, betAmount * multiplier);
+            message = `${symbol} ${count}x! Du gewinnst!`;
+            break;
+        }
+    }
+    
+    if (winnings === 0) {
+        message = 'Kein Gewinn diesmal!';
+    }
+    
+    return {
+        card: card,
+        winnings: winnings,
+        message: message
+    };
+}
+
+// Blackjack Game
+function startBlackjack(betAmount) {
+    const deck = createDeck();
+    const playerHand = [deck.pop(), deck.pop()];
+    const dealerHand = [deck.pop(), deck.pop()];
+    
+    return {
+        deck: deck,
+        playerHand: playerHand,
+        dealerHand: dealerHand,
+        betAmount: betAmount,
+        gameState: 'playing'
+    };
+}
+
+// War Card Game
+function playWar(betAmount) {
+    const deck = createDeck();
+    const playerCard = deck.pop();
+    const dealerCard = deck.pop();
+    
+    let winnings = 0;
+    let message = '';
+    
+    if (playerCard.value > dealerCard.value) {
+        winnings = betAmount * 2;
+        message = `Du gewinnst! ${cardToString(playerCard)} schlägt ${cardToString(dealerCard)}`;
+    } else if (playerCard.value < dealerCard.value) {
+        winnings = 0;
+        message = `Du verlierst! ${cardToString(dealerCard)} schlägt ${cardToString(playerCard)}`;
+    } else {
+        winnings = betAmount;
+        message = `Unentschieden! ${cardToString(playerCard)} = ${cardToString(dealerCard)} - Einsatz zurück`;
+    }
+    
+    return {
+        playerCard: playerCard,
+        dealerCard: dealerCard,
+        winnings: winnings,
+        message: message
+    };
+}
+
+// Crash Game
+function startCrash() {
+    const crashPoint = Math.random() < 0.05 ? 1 + Math.random() * 2 : 1 + Math.random() * 10;
+    return {
+        crashPoint: crashPoint,
+        currentMultiplier: 1.0,
+        crashed: false
+    };
+}
+
+// Mines Game
+function createMinesField(mines = 5) {
+    const field = Array(25).fill(false);
+    
+    // Place mines randomly
+    for (let i = 0; i < mines; i++) {
+        let pos;
+        do {
+            pos = Math.floor(Math.random() * 25);
+        } while (field[pos]);
+        field[pos] = true;
+    }
+    
+    return field;
+}
+
+// Wheel Game
+function spinWheel(betAmount) {
+    const segments = [
+        { name: '💎', multiplier: 50, chance: 1 },
+        { name: '⭐', multiplier: 10, chance: 3 },
+        { name: '🍒', multiplier: 5, chance: 8 },
+        { name: '🍋', multiplier: 3, chance: 15 },
+        { name: '🍇', multiplier: 2, chance: 25 },
+        { name: '❌', multiplier: 0, chance: 48 }
+    ];
+    
+    const random = Math.random() * 100;
+    let cumulative = 0;
+    
+    for (const segment of segments) {
+        cumulative += segment.chance;
+        if (random <= cumulative) {
+            return {
+                segment: segment.name,
+                multiplier: segment.multiplier,
+                winnings: betAmount * segment.multiplier,
+                message: segment.multiplier > 0 ? 
+                    `${segment.name} ${segment.multiplier}x! Du gewinnst!` : 
+                    `${segment.name} Kein Gewinn diesmal!`
+            };
+        }
+    }
 }
 
 client.on('ready', () => {
@@ -281,6 +550,288 @@ client.on('messageCreate', async message => {
         setUserMoney(message.author.id, newBalance);
         
         await playSlotAnimation(message, message.member.displayName, betAmount, result);
+    } else if (message.content.startsWith('?coinflip')) {
+        const args = message.content.split(' ');
+        const betAmount = parseInt(args[1]) || 1;
+        
+        if (isNaN(betAmount) || betAmount <= 0) {
+            await message.channel.send('❌ Bitte gib einen gültigen Betrag ein! (z.B. ?coinflip 10)');
+            return;
+        }
+        
+        const userBalance = getUserMoney(message.author.id);
+        if (userBalance < betAmount) {
+            await message.channel.send(`❌ Du hast nicht genug Geld! Du hast nur $${userBalance}.`);
+            return;
+        }
+        
+        const result = playCoinflip(betAmount);
+        const newBalance = userBalance - betAmount + result.winnings;
+        setUserMoney(message.author.id, newBalance);
+        
+        await message.channel.send(`🪙 **${message.member.displayName}** wirft eine Münze für $${betAmount}!\n${result.emoji} ${result.result.toUpperCase()}!\n${result.message}\n💰 Neuer Kontostand: $${newBalance}`);
+    
+    } else if (message.content.startsWith('?dice')) {
+        const args = message.content.split(' ');
+        const betAmount = parseInt(args[1]) || 1;
+        
+        if (isNaN(betAmount) || betAmount <= 0) {
+            await message.channel.send('❌ Bitte gib einen gültigen Betrag ein! (z.B. ?dice 10)');
+            return;
+        }
+        
+        const userBalance = getUserMoney(message.author.id);
+        if (userBalance < betAmount) {
+            await message.channel.send(`❌ Du hast nicht genug Geld! Du hast nur $${userBalance}.`);
+            return;
+        }
+        
+        const result = playDice(betAmount);
+        const newBalance = userBalance - betAmount + result.winnings;
+        setUserMoney(message.author.id, newBalance);
+        
+        await message.channel.send(`🎲 **${message.member.displayName}** würfelt für $${betAmount}!\n${result.message}\nGewinn: $${result.winnings}\n💰 Neuer Kontostand: $${newBalance}`);
+    
+    } else if (message.content.startsWith('?roulette')) {
+        const args = message.content.split(' ');
+        if (args.length < 3) {
+            await message.channel.send('❌ Verwendung: ?roulette <betrag> <red/black/0-36>\nBeispiele: ?roulette 10 red, ?roulette 5 black, ?roulette 20 7');
+            return;
+        }
+        
+        const betAmount = parseInt(args[1]);
+        const bet = args[2].toLowerCase();
+        
+        if (isNaN(betAmount) || betAmount <= 0) {
+            await message.channel.send('❌ Bitte gib einen gültigen Betrag ein!');
+            return;
+        }
+        
+        if (!['red', 'black'].includes(bet) && (isNaN(parseInt(bet)) || parseInt(bet) < 0 || parseInt(bet) > 36)) {
+            await message.channel.send('❌ Ungültiger Einsatz! Verwende "red", "black" oder eine Zahl 0-36.');
+            return;
+        }
+        
+        const userBalance = getUserMoney(message.author.id);
+        if (userBalance < betAmount) {
+            await message.channel.send(`❌ Du hast nicht genug Geld! Du hast nur $${userBalance}.`);
+            return;
+        }
+        
+        const result = playRoulette(betAmount, bet);
+        const newBalance = userBalance - betAmount + result.winnings;
+        setUserMoney(message.author.id, newBalance);
+        
+        await message.channel.send(`🎰 **${message.member.displayName}** spielt Roulette für $${betAmount} auf "${bet}"!\n${result.message}\nGewinn: $${result.winnings}\n💰 Neuer Kontostand: $${newBalance}`);
+    
+    } else if (message.content.startsWith('?scratch')) {
+        const args = message.content.split(' ');
+        const betAmount = parseInt(args[1]) || 1;
+        
+        if (isNaN(betAmount) || betAmount <= 0) {
+            await message.channel.send('❌ Bitte gib einen gültigen Betrag ein! (z.B. ?scratch 10)');
+            return;
+        }
+        
+        const userBalance = getUserMoney(message.author.id);
+        if (userBalance < betAmount) {
+            await message.channel.send(`❌ Du hast nicht genug Geld! Du hast nur $${userBalance}.`);
+            return;
+        }
+        
+        const result = playScratchCard(betAmount);
+        const newBalance = userBalance - betAmount + result.winnings;
+        setUserMoney(message.author.id, newBalance);
+        
+        const cardDisplay = result.card.slice(0, 3).join(' ') + '\n' + 
+                           result.card.slice(3, 6).join(' ') + '\n' + 
+                           result.card.slice(6, 9).join(' ');
+        
+        await message.channel.send(`🎫 **${message.member.displayName}** kauft ein Rubbellos für $${betAmount}!\n\`\`\`\n${cardDisplay}\n\`\`\`\n${result.message}\nGewinn: $${result.winnings}\n💰 Neuer Kontostand: $${newBalance}`);
+    
+    } else if (message.content.startsWith('?war')) {
+        const args = message.content.split(' ');
+        const betAmount = parseInt(args[1]) || 1;
+        
+        if (isNaN(betAmount) || betAmount <= 0) {
+            await message.channel.send('❌ Bitte gib einen gültigen Betrag ein! (z.B. ?war 10)');
+            return;
+        }
+        
+        const userBalance = getUserMoney(message.author.id);
+        if (userBalance < betAmount) {
+            await message.channel.send(`❌ Du hast nicht genug Geld! Du hast nur $${userBalance}.`);
+            return;
+        }
+        
+        const result = playWar(betAmount);
+        const newBalance = userBalance - betAmount + result.winnings;
+        setUserMoney(message.author.id, newBalance);
+        
+        await message.channel.send(`⚔️ **${message.member.displayName}** spielt Kartenkrieg für $${betAmount}!\nDeine Karte: ${cardToString(result.playerCard)}\nDealer Karte: ${cardToString(result.dealerCard)}\n${result.message}\nGewinn: $${result.winnings}\n💰 Neuer Kontostand: $${newBalance}`);
+    
+    } else if (message.content.startsWith('?wheel')) {
+        const args = message.content.split(' ');
+        const betAmount = parseInt(args[1]) || 1;
+        
+        if (isNaN(betAmount) || betAmount <= 0) {
+            await message.channel.send('❌ Bitte gib einen gültigen Betrag ein! (z.B. ?wheel 10)');
+            return;
+        }
+        
+        const userBalance = getUserMoney(message.author.id);
+        if (userBalance < betAmount) {
+            await message.channel.send(`❌ Du hast nicht genug Geld! Du hast nur $${userBalance}.`);
+            return;
+        }
+        
+        const result = spinWheel(betAmount);
+        const newBalance = userBalance - betAmount + result.winnings;
+        setUserMoney(message.author.id, newBalance);
+        
+        await message.channel.send(`🎡 **${message.member.displayName}** dreht das Glücksrad für $${betAmount}!\n🎯 Das Rad landet auf: ${result.segment}\n${result.message}\nGewinn: $${result.winnings}\n💰 Neuer Kontostand: $${newBalance}`);
+    
+    } else if (message.content.startsWith('?blackjack')) {
+        const args = message.content.split(' ');
+        const betAmount = parseInt(args[1]) || 1;
+        
+        if (isNaN(betAmount) || betAmount <= 0) {
+            await message.channel.send('❌ Bitte gib einen gültigen Betrag ein! (z.B. ?blackjack 10)');
+            return;
+        }
+        
+        const userBalance = getUserMoney(message.author.id);
+        if (userBalance < betAmount) {
+            await message.channel.send(`❌ Du hast nicht genug Geld! Du hast nur $${userBalance}.`);
+            return;
+        }
+        
+        if (activeGames.has(message.author.id)) {
+            await message.channel.send('❌ Du spielst bereits ein Spiel! Beende es zuerst.');
+            return;
+        }
+        
+        const game = startBlackjack(betAmount);
+        activeGames.set(message.author.id, game);
+        
+        const playerValue = calculateHandValue(game.playerHand);
+        const dealerValue = calculateHandValue([game.dealerHand[0]]);
+        
+        let content = `🃏 **${message.member.displayName}** spielt Blackjack für $${betAmount}!\n\n`;
+        content += `**Deine Karten:** ${game.playerHand.map(cardToString).join(', ')} (${playerValue})\n`;
+        content += `**Dealer:** ${cardToString(game.dealerHand[0])}, ? (${dealerValue}+)\n\n`;
+        
+        if (playerValue === 21) {
+            // Natural blackjack
+            const winnings = betAmount * 2.5;
+            const newBalance = userBalance - betAmount + winnings;
+            setUserMoney(message.author.id, newBalance);
+            activeGames.delete(message.author.id);
+            content += `🎉 BLACKJACK! Du gewinnst $${winnings}!\n💰 Neuer Kontostand: $${newBalance}`;
+        } else {
+            content += `Verwende ?hit zum Ziehen oder ?stand zum Bleiben`;
+        }
+        
+        await message.channel.send(content);
+    
+    } else if (message.content === '?hit') {
+        const game = activeGames.get(message.author.id);
+        if (!game || game.gameState !== 'playing') {
+            await message.channel.send('❌ Du spielst gerade kein Blackjack!');
+            return;
+        }
+        
+        game.playerHand.push(game.deck.pop());
+        const playerValue = calculateHandValue(game.playerHand);
+        
+        let content = `🃏 **${message.member.displayName}** zieht eine Karte!\n\n`;
+        content += `**Deine Karten:** ${game.playerHand.map(cardToString).join(', ')} (${playerValue})\n`;
+        content += `**Dealer:** ${cardToString(game.dealerHand[0])}, ?\n\n`;
+        
+        if (playerValue > 21) {
+            // Player busts
+            const newBalance = getUserMoney(message.author.id) - game.betAmount;
+            setUserMoney(message.author.id, newBalance);
+            activeGames.delete(message.author.id);
+            content += `💥 BUST! Du verlierst $${game.betAmount}!\n💰 Neuer Kontostand: $${newBalance}`;
+        } else if (playerValue === 21) {
+            content += `🎯 21! Verwende ?stand um zu bleiben`;
+        } else {
+            content += `Verwende ?hit zum Ziehen oder ?stand zum Bleiben`;
+        }
+        
+        await message.channel.send(content);
+    
+    } else if (message.content === '?stand') {
+        const game = activeGames.get(message.author.id);
+        if (!game || game.gameState !== 'playing') {
+            await message.channel.send('❌ Du spielst gerade kein Blackjack!');
+            return;
+        }
+        
+        // Dealer plays
+        while (calculateHandValue(game.dealerHand) < 17) {
+            game.dealerHand.push(game.deck.pop());
+        }
+        
+        const playerValue = calculateHandValue(game.playerHand);
+        const dealerValue = calculateHandValue(game.dealerHand);
+        
+        let content = `🃏 **${message.member.displayName}** bleibt bei ${playerValue}!\n\n`;
+        content += `**Deine Karten:** ${game.playerHand.map(cardToString).join(', ')} (${playerValue})\n`;
+        content += `**Dealer:** ${game.dealerHand.map(cardToString).join(', ')} (${dealerValue})\n\n`;
+        
+        let winnings = 0;
+        if (dealerValue > 21) {
+            winnings = game.betAmount * 2;
+            content += `🎉 Dealer BUST! Du gewinnst $${winnings}!`;
+        } else if (playerValue > dealerValue) {
+            winnings = game.betAmount * 2;
+            content += `🎉 Du gewinnst! $${winnings}!`;
+        } else if (playerValue === dealerValue) {
+            winnings = game.betAmount;
+            content += `🤝 Unentschieden! Einsatz zurück: $${winnings}`;
+        } else {
+            content += `😞 Du verlierst $${game.betAmount}!`;
+        }
+        
+        const newBalance = getUserMoney(message.author.id) - game.betAmount + winnings;
+        setUserMoney(message.author.id, newBalance);
+        activeGames.delete(message.author.id);
+        
+        content += `\n💰 Neuer Kontostand: $${newBalance}`;
+        await message.channel.send(content);
+    
+    } else if (message.content.startsWith('?jackpot')) {
+        const balance = getUserMoney(message.author.id);
+        await message.channel.send(`🎰 **JACKPOT POOL** 🎰\n💰 Aktueller Jackpot: $${jackpotPool.amount}\n💳 Dein Guthaben: $${balance}\n\n🎫 Kaufe ein Jackpot-Ticket für $100 mit ?jackpot buy\n🏆 Jeden Tag um 20:00 wird ein Gewinner gezogen!`);
+    
+    } else if (message.content === '?games' || message.content === '?help') {
+        const helpText = `🎮 **GAMELING CASINO** 🎮\n\n` +
+        `💰 **Guthaben & Belohnungen:**\n` +
+        `?money - Kontostand anzeigen\n` +
+        `?daily - Tägliche Belohnung ($100-800)\n\n` +
+        
+        `🎰 **Glücksspiele:**\n` +
+        `?slot <betrag> - Spielautomaten (Multiplikatoren: 2x-50x)\n` +
+        `?coinflip <betrag> - Münzwurf (2x bei Gewinn)\n` +
+        `?dice <betrag> - Würfel (6=6x, 5=3x, 3-4=1.5x)\n` +
+        `?roulette <betrag> <red/black/0-36> - Roulette (Farbe=2x, Zahl=36x)\n` +
+        `?wheel <betrag> - Glücksrad (2x-50x Multiplikatoren)\n` +
+        `?scratch <betrag> - Rubbellos (3+ gleiche Symbole gewinnen)\n\n` +
+        
+        `🃏 **Kartenspiele:**\n` +
+        `?blackjack <betrag> - Blackjack (dann ?hit oder ?stand)\n` +
+        `?war <betrag> - Kartenkrieg (höhere Karte gewinnt)\n\n` +
+        
+        `🏆 **Spezial:**\n` +
+        `?jackpot - Jackpot Pool anzeigen\n` +
+        `?risk - Original Risk Command\n\n` +
+        
+        `**Startguthaben:** $500 für neue Spieler\n` +
+        `**Tipp:** Beginne mit kleinen Einsätzen!`;
+        
+        await message.channel.send(helpText);
     }
 });
 
